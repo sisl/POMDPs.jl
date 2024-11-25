@@ -47,38 +47,60 @@ The evolution of epsilon can be controlled using a schedule. This feature is use
 
 If a function is passed for `eps`, `eps(k)` is called to compute the value of epsilon when calling `action(exploration_policy, on_policy, k, s)`.
 
-    
-# Fields 
+
+# Fields
 
 - `eps::Function`
 - `rng::AbstractRNG`
 - `m::M` POMDPs or MDPs problem
+- `on_policy::P` a policy to use for the greedy part
+- `k::Int` the current training step to use for computing eps(k)
 """
-struct EpsGreedyPolicy{T<:Function, R<:AbstractRNG, M<:Union{MDP,POMDP}} <: ExplorationPolicy
+mutable struct EpsGreedyPolicy{P<:Union{Nothing,Policy},T<:Function,R<:AbstractRNG,M<:Union{MDP,POMDP}} <: ExplorationPolicy
+    on_policy::P
+    k::Int
     eps::T
     rng::R
     m::M
 end
 
-function EpsGreedyPolicy(problem::Union{MDP,POMDP}, eps::Function; 
+function EpsGreedyPolicy(problem::Union{MDP,POMDP}, eps::Function;
                          rng::AbstractRNG=Random.default_rng())
-    return EpsGreedyPolicy(eps, rng, problem)
+    return EpsGreedyPolicy(nothing, 1, eps, rng, problem)
 end
-function EpsGreedyPolicy(problem::Union{MDP,POMDP}, eps::Real; 
+function EpsGreedyPolicy(problem::Union{MDP,POMDP}, eps::Real;
                          rng::AbstractRNG=Random.default_rng())
-    return EpsGreedyPolicy(x->eps, rng, problem)
+    return EpsGreedyPolicy(problem, x -> eps, rng=rng)
 end
-
+function EpsGreedyPolicy(problem::Union{MDP,POMDP}, on_policy::Policy, eps::Function;
+    k::Int=1, rng::AbstractRNG=Random.default_rng())
+    return EpsGreedyPolicy(on_policy, k, eps, rng, problem)
+end
+function EpsGreedyPolicy(problem::Union{MDP,POMDP}, on_policy::Policy, eps::Real;
+    k::Int=1, rng::AbstractRNG=Random.default_rng())
+    return EpsGreedyPolicy(problem, on_policy, x -> eps, k=k, rng=rng)
+end
 
 function POMDPs.action(p::EpsGreedyPolicy, on_policy::Policy, k, s)
     if rand(p.rng) < p.eps(k)
         return rand(p.rng, actions(p.m,s))
-    else 
+    else
         return action(on_policy, s)
     end
 end
+POMDPs.action(p::EpsGreedyPolicy{<:Policy}, s) = action(p, p.on_policy, p.k, s)
 
 loginfo(p::EpsGreedyPolicy, k) = (eps=p.eps(k),)
+loginfo(p::EpsGreedyPolicy) = loginfo(p, p.k)
+
+function update!(p::EpsGreedyPolicy, k::Int)
+    p.k = k
+    return p
+end
+function update!(p::EpsGreedyPolicy{P}, on_policy::P) where {P<:Policy}
+    p.on_policy = on_policy
+    return p
+end
 
 # softmax 
 """

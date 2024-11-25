@@ -68,7 +68,8 @@ export LinearDecaySchedule,
        EpsGreedyPolicy,
        SoftmaxPolicy,
        ExplorationPolicy,
-       loginfo
+       loginfo,
+       update!
 
 include("exploration_policies.jl")
 

@@ -7,7 +7,7 @@ Create a sparse categorical distribution.
 
 This is optimized for value iteration with a fast implementation of `weighted_iterator`. Both `pdf` and `rand` are order n.
 """
-struct SparseCat{V, P}
+struct SparseCat{V, P, F} <: Distribution{F, Discrete}
     vals::V
     probs::P
 end
@@ -23,13 +23,16 @@ function SparseCat(v, p::AbstractArray)
     SparseCat(v, cp)
 end
 # the method above gets all arrays *except* ones that have a numeric eltype, which are handled below
-SparseCat(v, p::AbstractArray{<:Number}) = SparseCat{typeof(v), typeof(p)}(v, p)
+SparseCat(v, p::AbstractArray{<:Number}) = SparseCat{typeof(v), typeof(p), infer_variate_form(eltype(v))}(v, p)
 
-function rand(rng::AbstractRNG, s::Random.SamplerTrivial{<:SparseCat})
-    d = s[]
+SparseCat(v, p) = SparseCat{typeof(v), typeof(p), infer_variate_form(eltype(v))}(v, p)
+
+rand(rng::AbstractRNG, s::Random.SamplerTrivial{<:SparseCat}) = rand(rng, s[])
+
+function rand(rng::AbstractRNG, d::SparseCat)
     r = sum(d.probs)*rand(rng)
     tot = zero(eltype(d.probs))
-    for (v, p) in d
+    for (v, p) in weighted_iterator(d)
         tot += p
         if r < tot
             return v
@@ -47,9 +50,18 @@ function rand(rng::AbstractRNG, s::Random.SamplerTrivial{<:SparseCat})
     error("Error sampling from SparseCat distribution with vals $(d.vals) and probs $(d.probs)") # try to help with type stability
 end
 
+Distributions.sampler(d::SparseCat) = Random.SamplerTrivial(d)
+Random.Sampler(::AbstractRNG, d::SparseCat, repetition::Union{Val{1}, Val{Inf}}) = Random.SamplerTrivial(d)
+
+# to resolve ambiguity between pdf(::UnivariateDistribution, ::Real) and pdf(::SparseCat, ::Any)
+pdf(d::SparseCat, s) = _pdf(d, s)
+pdf(d::SparseCat, s::Real) = _pdf(d, s)
+
+Distributions.logpdf(d::SparseCat, x) = log(pdf(d, x))
+
 # slow linear search :(
-function pdf(d::SparseCat, s)
-    for (v, p) in d
+function _pdf(d::SparseCat, s)
+    for (v, p) in weighted_iterator(d)
         if v == s
             return p
         end
@@ -57,7 +69,7 @@ function pdf(d::SparseCat, s)
     return zero(eltype(d.probs))
 end
 
-function pdf(d::SparseCat{V,P}, s) where {V<:AbstractArray, P<:AbstractArray}
+function _pdf(d::SparseCat{V,P}, s) where {V<:AbstractArray, P<:AbstractArray}
     for (i,v) in enumerate(d.vals)
         if v == s
             return d.probs[i]
@@ -67,19 +79,25 @@ function pdf(d::SparseCat{V,P}, s) where {V<:AbstractArray, P<:AbstractArray}
 end
 
 
-
 support(d::SparseCat) = d.vals
 
-weighted_iterator(d::SparseCat) = d
+struct SparseCatIterator{D<:SparseCat}
+    d::D
+end
+
+
+weighted_iterator(d::SparseCat) = SparseCatIterator(d)
 
 # iterator for general SparseCat
 # this has some type stability problems
-function Base.iterate(d::SparseCat)
+function Base.iterate(i::SparseCatIterator)
+    d = i.d
     val, vstate = iterate(d.vals)
     prob, pstate = iterate(d.probs)
     return ((val=>prob), (vstate, pstate))
 end
-function Base.iterate(d::SparseCat, dstate::Tuple)
+function Base.iterate(i::SparseCatIterator, dstate::Tuple)
+    d = i.d
     vstate, pstate = dstate
     vnext = iterate(d.vals, vstate)
     pnext = iterate(d.probs, pstate)
@@ -94,21 +112,22 @@ end
 # iterator for SparseCat with indexed members
 const Indexed = Union{AbstractArray, Tuple, NamedTuple}
 
-function Base.iterate(d::SparseCat{V,P}, state::Integer=1) where {V<:Indexed, P<:Indexed}
-    if state > length(d)
+function Base.iterate(i::SparseCatIterator{<:SparseCat{<:Indexed,<:Indexed}}, state::Integer=1)
+    if state > length(i)
         return nothing 
     end
-    return (d.vals[state]=>d.probs[state], state+1)
+    return (i.d.vals[state]=>i.d.probs[state], state+1)
 end
 
-Base.length(d::SparseCat) = min(length(d.vals), length(d.probs))
-Base.eltype(D::Type{SparseCat{V,P}}) where {V, P} = Pair{eltype(V), eltype(P)}
-sampletype(D::Type{SparseCat{V,P}}) where {V, P} = eltype(V)
-Random.gentype(D::Type{SparseCat{V,P}}) where {V, P} = eltype(V)
+Base.length(i::SparseCatIterator) = min(length(i.d.vals), length(i.d.probs))
+Base.eltype(D::Type{SparseCatIterator{SparseCat{V,P,F}}}) where {V,P,F} = Pair{eltype(V), eltype(P)}
+
+sampletype(D::Type{SparseCat{V,P,F}}) where {V,P,F} = eltype(V)
+Random.gentype(D::Type{SparseCat{V,P,F}}) where {V,P,F} = eltype(V)
 
 function mean(d::SparseCat)
     vsum = zero(eltype(d.vals))
-    for (v, p) in d
+    for (v, p) in weighted_iterator(d)
         vsum += v*p
     end
     return vsum/sum(d.probs)
@@ -117,7 +136,7 @@ end
 function mode(d::SparseCat)
     bestp = zero(eltype(d.probs))
     bestv = first(d.vals)
-    for (v, p) in d
+    for (v, p) in weighted_iterator(d)
         if p >= bestp
             bestp = p
             bestv = v
